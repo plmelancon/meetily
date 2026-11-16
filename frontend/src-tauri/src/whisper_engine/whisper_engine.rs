@@ -1685,4 +1685,34 @@ mod tests {
         let models = engine.discover_models().await.unwrap();
         assert!(matches!(tiny_model(&models).status, ModelStatus::Missing));
     }
+
+    #[tokio::test]
+    async fn load_model_unloads_a_different_loaded_model_without_deadlocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap();
+
+        // Mark "tiny" available at a path that does not exist, so the load itself fails
+        // quickly without needing real model weights.
+        engine.available_models.write().await.insert(
+            "tiny".to_string(),
+            ModelInfo {
+                name: "tiny".to_string(),
+                path: dir.path().join("missing-ggml-tiny.bin"),
+                size_mb: 75,
+                accuracy: "Basic".to_string(),
+                speed: "Fast".to_string(),
+                status: ModelStatus::Available,
+                description: "test model".to_string(),
+            },
+        );
+        // Pretend another model is currently loaded.
+        *engine.current_model.write().await = Some("base".to_string());
+
+        let result = timeout(Duration::from_secs(10), engine.load_model("tiny"))
+            .await
+            .expect("load_model must not deadlock while switching from another loaded model");
+
+        assert!(result.is_err());
+        assert_eq!(engine.get_current_model().await, None);
+    }
 }
